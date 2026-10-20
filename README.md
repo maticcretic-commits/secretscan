@@ -1,24 +1,52 @@
 # SecretScan 🔒
 
-**Catch leaked secrets in agent outputs before they ship.**
+**AI agents paste things — API keys into run logs, tokens into traces, test card numbers into sample outputs — and then someone commits the whole folder.**
 
-Find secrets before git does.
+SecretScan scans agent outputs and artifacts for leaked secrets and PII, fails CI at the severity you set, and can write redacted copies that are safe to share. (Values in its own reports are always truncated, as below.)
 
-AI agents paste things. API keys into run logs, tokens into traces,
-test card numbers into sample outputs, private keys into "temporary"
-debug files — and then someone commits the whole folder. SecretScan
-scans agent outputs and artifacts for leaked secrets and PII, and can
-write redacted copies that are safe to share.
-
-Offline and dependency-free: pattern detectors for known token
-formats, a Luhn check for card numbers, Shannon-entropy candidates,
-and an allowlist for the fakes you keep on purpose. Scanning is
-line-based, so JSONL agent traces report exact per-record line numbers.
+*Part of **AgentForge** — verify AI-agent work before you ship it.*
+*The family: [AgentProof](https://github.com/maticcretic-commits/agentproof) · [PromptRE](https://github.com/maticcretic-commits/promptre) · [AgentCI](https://github.com/maticcretic-commits/agentci) · [SecretScan](https://github.com/maticcretic-commits/secretscan) · [CostLedger](https://github.com/maticcretic-commits/costledger) · [SchemaGuard](https://github.com/maticcretic-commits/schemaguard) · [SkillAudit](https://github.com/maticcretic-commits/skillaudit) · [PromptDiff](https://github.com/maticcretic-commits/promptdiff) · [TraceTape](https://github.com/maticcretic-commits/tracetape) · [PromptLint](https://github.com/maticcretic-commits/promptlint) · [ClaimCheck](https://github.com/maticcretic-commits/claimcheck) · [TrustBadge](https://github.com/maticcretic-commits/trustbadge)*
 
 ```bash
-python src/secretscan.py scan agent-run.log
-python src/secretscan.py scan --staged        # pre-commit: staged changes only
-python src/secretscan.py redact agent-run.log --out shareable/
+$ secretscan scan examples/agent-output-with-secrets.md
+```
+
+```
+====================================================================
+SecretScan — scan report
+====================================================================
+Source:  examples/agent-output-with-secrets.md
+Scanned: 1 file(s) · 9 finding(s)
+
+## examples/agent-output-with-secrets.md
+  line 5     🟠 HIGH     [aws-access-key] AWS access key — AKIAIOSFOD…
+  line 6     🔴 CRITICAL [aws-secret-key] AWS secret access key — aws_secret…
+  line 7     🟠 HIGH     [github-token] GitHub token — ghp_FakeFa…
+  line 8     🔴 CRITICAL [stripe-key] Stripe live secret key — sk_live_Fa…
+  line 9     🟠 HIGH     [credit-card] Credit card number (Luhn-verified) — 4242 4242 …
+  …
+❌ FAIL — 5 finding(s) at or above 'high'
+```
+
+*Exit code 1 — five findings at or above the default `high` fail threshold. The sample file's secrets are planted fakes; the same file also carries an allowlisted line that never appears.*
+
+## Install
+
+```bash
+pipx install git+https://github.com/maticcretic-commits/secretscan
+# or, into the current environment:
+pip install git+https://github.com/maticcretic-commits/secretscan
+```
+
+Then run it as `secretscan …` (Python 3.9+, no dependencies — stdlib only).
+PyPI release planned; until then, the git URL above is the install path.
+
+From source — it is a single file, so no install is needed at all:
+
+```bash
+git clone https://github.com/maticcretic-commits/secretscan
+cd secretscan
+python src/secretscan.py …
 ```
 
 ## What it catches
@@ -139,10 +167,38 @@ human would. Review catches what people notice; SecretScan catches
 what they don't — in the 30 seconds before the commit, not in the
 incident review after it.
 
+## Limitations
+
+- Pattern- and entropy-based: novel or obfuscated secret formats can slip
+  through, and high-entropy strings (hashes, IDs) can false-positive — the
+  allowlist exists for the fakes you keep on purpose.
+- It finds secret-*shaped* strings; it cannot tell a live key from a
+  revoked one.
+- Scanning is line-based: a secret split across lines, or encoded so it no
+  longer matches its format, may not be recognised.
+
+## Exit codes & JSON output
+
+All AgentForge tools share one contract (full text in
+[CONVENTIONS.md](CONVENTIONS.md)):
+
+| Code | Meaning |
+|------|---------|
+| `0` | Clean / PASS — no findings at or above the tool's fail threshold |
+| `1` | Findings / FAIL — the tool ran fine; the answer is “no” |
+| `2` | Caller error — bad arguments, missing or unreadable input |
+| `3` | Environment error — the tool itself could not run |
+
+On a caller error the tool also prints one JSON line to stderr:
+`{"error": {"code": "file_not_found", "message": "no such file: x"}}`.
+
+JSON output (`--format json`) always carries the family envelope —
+`{"tool": "secretscan", "version": "1.0.0", "schema_version": 1}` — alongside
+the tool's own payload keys, unchanged.
+
 ## Part of AgentForge
 
-SecretScan is the fourth tool in the [AgentForge](https://github.com/maticcretic-commits)
-trust layer for AI agents:
+SecretScan is one of the 12 tools in the [AgentForge](https://github.com/maticcretic-commits) family — offline, stdlib-only tools to **verify AI-agent work before you ship it**:
 
 - **AgentProof** — verify agent work — [github.com/maticcretic-commits/agentproof](https://github.com/maticcretic-commits/agentproof)
 - **PromptRE** — reverse-engineer agent prompts — [github.com/maticcretic-commits/promptre](https://github.com/maticcretic-commits/promptre)
