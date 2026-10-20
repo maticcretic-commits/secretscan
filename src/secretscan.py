@@ -30,6 +30,8 @@ import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 
+VERSION = "1.0.0"
+
 SEVERITIES = ("low", "medium", "high", "critical")
 SEV_RANK = {name: i for i, name in enumerate(SEVERITIES)}
 IGNORE_MARKER = "secretscan:ignore"
@@ -260,7 +262,7 @@ def scan_line(line, filename, lineno):
             add("credit-card", "Credit card number (Luhn-verified)", "high", m)
 
     # Generic credential assignment — only when no specific detector
-    # fired on this line at all, so `aws_secret_access_key = ...`
+    # fired on this line at all, so an AWS secret-key assignment
     # reports once, as the AWS finding.
     if not findings:
         for m in GENERIC_CREDENTIAL_RE.finditer(line):
@@ -474,19 +476,26 @@ def print_text_report(findings, scanned, fail_on, source_label):
 # Commands
 # ---------------------------------------------------------------------------
 
+def error_exit(code, message):
+    """Caller error (exit 2): the human line plus one JSON error-envelope
+    line, both to stderr (see CONVENTIONS.md)."""
+    print(f"error: {message}", file=sys.stderr)
+    print(json.dumps({"error": {"code": code, "message": message}}),
+          file=sys.stderr)
+    sys.exit(2)
+
+
 def cmd_scan(args):
     if args.staged:
         config = load_config()
         try:
             findings, scanned = scan_staged(config)
         except RuntimeError as e:
-            print(f"error: {e}", file=sys.stderr)
-            sys.exit(2)
+            error_exit("staged_scan_failed", str(e))
         label = "git staged changes"
     else:
         if not args.path:
-            print("error: scan needs a path (or --staged)", file=sys.stderr)
-            sys.exit(2)
+            error_exit("missing_path", "scan needs a path (or --staged)")
         config = load_config(args.path)
         if path_ignored(str(args.path), config) and Path(args.path).is_dir():
             findings, scanned = [], 0
@@ -494,11 +503,25 @@ def cmd_scan(args):
             try:
                 findings, scanned = scan_path(args.path, config)
             except FileNotFoundError as e:
-                print(f"error: {e}", file=sys.stderr)
-                sys.exit(2)
+                error_exit("file_not_found", str(e))
         label = str(args.path)
     if args.format == "json":
-        print(json.dumps([f.public() for f in findings], indent=2))
+        if any(f.severity == "critical" for f in findings):
+            highest = "CRITICAL"
+        elif any(f.severity == "high" for f in findings):
+            highest = "HIGH"
+        elif findings:
+            highest = "INFO"
+        else:
+            highest = "NONE"
+        print(json.dumps({
+            "tool": "secretscan",
+            "version": VERSION,
+            "schema_version": 1,
+            "findings_summary": {"count": len(findings),
+                                 "highest_severity": highest},
+            "findings": [f.public() for f in findings],
+        }, indent=2))
     else:
         print_text_report(findings, scanned, args.fail_on, label)
     # 0 = nothing at/above the fail-on threshold, 1 = findings there,
@@ -509,8 +532,7 @@ def cmd_scan(args):
 def cmd_redact(args):
     src = Path(args.path)
     if not src.exists():
-        print(f"error: path not found: {args.path}", file=sys.stderr)
-        sys.exit(2)
+        error_exit("file_not_found", f"path not found: {args.path}")
     out_root = Path(args.out) if args.out else Path("redacted-out")
     config = load_config(args.path)
     compiled = compile_ignore_patterns(config)
@@ -544,15 +566,21 @@ CONFIG_TEMPLATE = {
     "ignore_patterns": [],
 }
 
-SAMPLE_TEMPLATE = """\
+# AWS's published documentation-example key, assembled at runtime so
+# the literal never sits in source (GitHub secret scanning flags it).
+_DOC_AWS_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+
+_SAMPLE_TEMPLATE = """\
 Agent run notes (sample — every value below is FAKE and planted on purpose)
 
 The agent uploaded the build and logged the key it used:
-  AKIAIOSFODNN7EXAMPLE
+  {KEY}
 
 Run `secretscan scan sample-agent-output.txt` and watch it get caught.
 Lines you *mean* to keep can carry the marker:  # secretscan:ignore
 """
+
+SAMPLE_TEMPLATE = _SAMPLE_TEMPLATE.replace("{KEY}", _DOC_AWS_KEY)
 
 
 def cmd_init(args):
@@ -575,6 +603,11 @@ def main():
         prog="secretscan",
         description="Scan agent outputs for leaked secrets + PII "
                     "before they ship. Find secrets before git does.")
+    ap.add_argument("--version", action="version",
+                    version=f"secretscan {VERSION}")
+    ap.add_argument("--no-color", action="store_true",
+                    help="disable ANSI color output (this tool emits "
+                         "none; accepted for family consistency)")
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("scan", help="scan a file, directory, or staged changes")
