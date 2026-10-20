@@ -34,6 +34,16 @@ VERSION = "1.0.0"
 
 SEVERITIES = ("low", "medium", "high", "critical")
 SEV_RANK = {name: i for i, name in enumerate(SEVERITIES)}
+
+# Family severity tiers (see CONVENTIONS.md): the native labels above
+# map onto three shared tiers — critical -> CRITICAL, high -> HIGH,
+# medium/low -> INFO. Findings carry both labels in JSON reports.
+SEVERITY_TIER = {"critical": "CRITICAL", "high": "HIGH",
+                 "medium": "INFO", "low": "INFO"}
+
+
+def severity_tier(severity):
+    return SEVERITY_TIER.get(str(severity).lower(), "INFO")
 IGNORE_MARKER = "secretscan:ignore"
 CONFIG_NAME = ".secretscan.json"
 ENTROPY_THRESHOLD = 4.5
@@ -54,9 +64,14 @@ class Finding:
     match: str = ""   # the matched text (for redaction + masked display)
 
     def public(self):
-        """The JSON-report shape: exactly these five fields."""
+        """The JSON-report shape: exactly these six fields.
+
+        `severity` is SecretScan's native label; `tier` is the family
+        severity tier it maps to (CONVENTIONS.md).
+        """
         return {"file": self.file, "line": self.line, "check": self.check,
-                "type": self.type, "severity": self.severity}
+                "type": self.type, "severity": self.severity,
+                "tier": severity_tier(self.severity)}
 
 
 @dataclass
@@ -79,8 +94,12 @@ PATTERN_DETECTORS = [
      re.compile(r"\bwhsec_[A-Za-z0-9]{16,}\b")),
     ("stripe-key", "Stripe test secret key", "high",
      re.compile(r"\b(?:sk|rk)_test_[A-Za-z0-9]{16,}\b")),
+    # The AWS secret value has no fixed shape, but the bare variable
+    # NAME is not a secret — documentation (including this tool's own
+    # detector table) mentions it in prose. Require assignment
+    # context: the name followed by ':' or '='.
     ("aws-secret-key", "AWS secret access key", "critical",
-     re.compile(r"(?i)\baws_secret_access_key\b")),
+     re.compile(r"(?i)\baws_secret_access_key\b\s*[:=]")),
     ("aws-access-key", "AWS access key", "high",
      re.compile(r"\b(?:AKIA|ASIA|ABIA|ACCA)[0-9A-Z]{16}\b")),
     ("github-token", "GitHub token", "high",
@@ -266,6 +285,11 @@ def scan_line(line, filename, lineno):
     # reports once, as the AWS finding.
     if not findings:
         for m in GENERIC_CREDENTIAL_RE.finditer(line):
+            # A value starting with a backtick is markdown quoting —
+            # documentation talking ABOUT a credential, not a config
+            # value ("Secrets: `api_key` ..." in prose).
+            if m.group(1).startswith("`"):
+                continue
             if looks_token_like(m.group(1)):
                 findings.append(Finding(
                     filename, lineno, "generic-credential",
@@ -307,14 +331,22 @@ def is_binary_bytes(data):
 
 def iter_files(root):
     """Yield scannable file paths under a file or directory path,
-    skipping .git/ internals."""
+    skipping .git/ internals and generated packaging artifacts
+    (__pycache__, *.egg-info) — an egg-info entry_points.txt line like
+    `tool = tool:main` is a console-script declaration, not a
+    credential, and generated metadata is not agent output."""
     root = Path(root)
     if root.is_file():
         yield root
         return
     for p in sorted(root.rglob("*")):
-        if p.is_file() and ".git" not in p.parts:
-            yield p
+        if not p.is_file():
+            continue
+        if ".git" in p.parts or "__pycache__" in p.parts:
+            continue
+        if any(part.endswith(".egg-info") for part in p.parts):
+            continue
+        yield p
 
 
 def scan_path(path, config):
