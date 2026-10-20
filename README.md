@@ -108,7 +108,7 @@ Two ways to keep intentional fakes quiet:
 ```json
 {
   "ignore_paths": ["fixtures/*", "*.lock"],
-  "ignore_patterns": ["AKIAIOSFODNN7EXAMPLE"]
+  "ignore_patterns": ["AKIA…EXAMPLE"]
 }
 ```
 
