@@ -532,3 +532,86 @@ def test_generic_credential_ignores_backticked_prose():
     fs = scan_line("References are not secrets: `api_key` is a name.",
                    "t", 1)
     assert not any(f.check == "generic-credential" for f in fs)
+
+
+# ---------------------------------------------------------------------------
+# Phase 2: SARIF output + stdin scanning
+# ---------------------------------------------------------------------------
+
+from secretscan import build_sarif  # noqa: E402
+
+
+def assert_sarif_shape(doc, tool_name):
+    """SARIF 2.1.0 top-level required fields (structure assertion)."""
+    assert doc["version"] == "2.1.0"
+    assert doc["$schema"].endswith("sarif-2.1.0.json")
+    assert len(doc["runs"]) == 1
+    run = doc["runs"][0]
+    driver = run["tool"]["driver"]
+    assert driver["name"] == tool_name
+    assert driver["version"]
+    assert driver["informationUri"].startswith(
+        "https://github.com/maticcretic-commits/")
+    assert isinstance(driver["rules"], list)
+    assert isinstance(run["results"], list)
+    rule_ids = {r["id"] for r in driver["rules"]}
+    for res in run["results"]:
+        assert res["ruleId"] in rule_ids
+        assert res["level"] in ("error", "warning", "note", "none")
+        assert res["message"]["text"]
+    return run
+
+
+def test_sarif_output_via_cli(tmp_path):
+    p = tmp_path / "planted.txt"
+    p.write_text("key: " + AWS_KEY + "\n")
+    proc = run_cli("scan", str(p), "--format", "sarif")
+    assert proc.returncode == 1  # same verdict/exit as text+json
+    run = assert_sarif_shape(json.loads(proc.stdout), "secretscan")
+    results = run["results"]
+    assert len(results) == 1
+    assert results[0]["ruleId"] == "aws-access-key"
+    assert results[0]["level"] == "error"  # high native -> HIGH tier
+    loc = results[0]["locations"][0]["physicalLocation"]
+    assert loc["artifactLocation"]["uri"] == str(p)
+    assert loc["region"]["startLine"] == 1
+    # The secret value itself is never copied into the SARIF log.
+    assert AWS_KEY not in proc.stdout
+
+
+def test_sarif_levels_and_empty(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    findings = scan_path  # keep import surface obvious
+    doc = build_sarif([])
+    run = assert_sarif_shape(doc, "secretscan")
+    assert run["results"] == [] and run["tool"]["driver"]["rules"] == []
+    # medium -> warning, low -> note (via scan_line findings)
+    med = [f for f in scan_line("user@example.com", "t", 1)]
+    doc = build_sarif(med)
+    levels = {r["ruleId"]: r["level"]
+              for r in doc["runs"][0]["results"]}
+    assert all(v in ("warning", "note") for v in levels.values())
+
+
+def test_scan_stdin_json(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(CLI_PATH), "scan", "-", "--format", "json"],
+        input="key: " + AWS_KEY + "\nclean line\n",
+        capture_output=True, text=True)
+    assert proc.returncode == 1
+    data = json.loads(proc.stdout)  # stdout is pure JSON
+    assert data["tool"] == "secretscan"
+    assert len(data["findings"]) == 1
+    assert data["findings"][0]["file"] == "<stdin>"
+    assert data["findings"][0]["line"] == 1
+
+
+def test_scan_stdin_clean_exits_zero(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    proc = subprocess.run(
+        [sys.executable, str(CLI_PATH), "scan", "-", "--format", "json"],
+        input="nothing to see here\n",
+        capture_output=True, text=True)
+    assert proc.returncode == 0
+    assert json.loads(proc.stdout)["findings"] == []
