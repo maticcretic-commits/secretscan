@@ -14,7 +14,8 @@ a Luhn check for card numbers, Shannon-entropy candidates, and an
 allowlist for the fakes you keep on purpose.
 
 Usage:
-    secretscan scan <path> [--format text|json] [--fail-on LEVEL]
+    secretscan scan <path> [--format text|json|sarif] [--fail-on LEVEL]
+    secretscan scan - [--format json]        # scan text from stdin
     secretscan scan --staged [--format json]
     secretscan redact <path> [--out DIR]
     secretscan init
@@ -505,6 +506,68 @@ def print_text_report(findings, scanned, fail_on, source_label):
 
 
 # ---------------------------------------------------------------------------
+# SARIF output (SARIF 2.1.0 — see CONVENTIONS.md)
+# ---------------------------------------------------------------------------
+
+def _sarif_level(tier, severity):
+    """Tier CRITICAL/HIGH -> error; native medium -> warning; else note."""
+    if tier in ("CRITICAL", "HIGH"):
+        return "error"
+    if severity == "medium":
+        return "warning"
+    return "note"
+
+
+def _sarif_rule_name(rule_id):
+    return "".join(p.capitalize() for p in re.split(
+        r"[^A-Za-z0-9]+", rule_id) if p) or "Finding"
+
+
+def build_sarif(findings):
+    """Build a SARIF 2.1.0 log from Finding objects. The matched secret
+    text is never copied into the log — only the detector's type label."""
+    rules, seen = [], set()
+    results = []
+    for f in findings:
+        level = _sarif_level(severity_tier(f.severity), f.severity)
+        if f.check not in seen:
+            seen.add(f.check)
+            rules.append({
+                "id": f.check,
+                "name": _sarif_rule_name(f.check),
+                "shortDescription": {"text": f.type},
+                "fullDescription": {
+                    "text": f"SecretScan detector: {f.type}."},
+                "defaultConfiguration": {"level": level},
+                "properties": {"severity": f.severity,
+                               "tier": severity_tier(f.severity)},
+            })
+        results.append({
+            "ruleId": f.check,
+            "level": level,
+            "message": {"text": f"{f.type} ({f.severity})"},
+            "locations": [{"physicalLocation": {
+                "artifactLocation": {"uri": f.file},
+                "region": {"startLine": f.line},
+            }}],
+        })
+    return {
+        "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+        "version": "2.1.0",
+        "runs": [{
+            "tool": {"driver": {
+                "name": "secretscan",
+                "version": VERSION,
+                "informationUri":
+                    "https://github.com/maticcretic-commits/secretscan",
+                "rules": rules,
+            }},
+            "results": results,
+        }],
+    }
+
+
+# ---------------------------------------------------------------------------
 # Commands
 # ---------------------------------------------------------------------------
 
@@ -525,6 +588,14 @@ def cmd_scan(args):
         except RuntimeError as e:
             error_exit("staged_scan_failed", str(e))
         label = "git staged changes"
+    elif args.path == "-":
+        # Pipe composability (CONVENTIONS.md): scan text read from stdin.
+        config = load_config()
+        text = sys.stdin.read()
+        findings = scan_lines(text.splitlines(), "<stdin>", config,
+                              compile_ignore_patterns(config))
+        scanned = 1
+        label = "<stdin>"
     else:
         if not args.path:
             error_exit("missing_path", "scan needs a path (or --staged)")
@@ -537,7 +608,9 @@ def cmd_scan(args):
             except FileNotFoundError as e:
                 error_exit("file_not_found", str(e))
         label = str(args.path)
-    if args.format == "json":
+    if args.format == "sarif":
+        print(json.dumps(build_sarif(findings), indent=2))
+    elif args.format == "json":
         if any(f.severity == "critical" for f in findings):
             highest = "CRITICAL"
         elif any(f.severity == "high" for f in findings):
@@ -646,8 +719,10 @@ def main():
     s.add_argument("path", nargs="?", help="file or directory to scan")
     s.add_argument("--staged", action="store_true",
                    help="scan git staged changes (git diff --cached) instead")
-    s.add_argument("--format", choices=("text", "json"), default="text",
-                   help="report format (default: text)")
+    s.add_argument("--format", choices=("text", "json", "sarif"),
+                   default="text",
+                   help="report format (default: text); "
+                        "path '-' scans stdin")
     s.add_argument("--fail-on", choices=SEVERITIES, default="high",
                    help="lowest severity that exits 1 (default: high)")
     s.set_defaults(fn=cmd_scan)
