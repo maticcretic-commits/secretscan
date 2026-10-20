@@ -1,0 +1,20 @@
+# AgentForge family dogfood: this repo verifies itself with the
+# shared reusable workflow (maticcretic-commits/.github) — SecretScan scans its own source — it must report zero findings on itself.
+# Reports are uploaded as run artifacts; a FAIL verdict fails the job.
+
+name: verify
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    uses: maticcretic-commits/.github/.github/workflows/agentforge-verify.yml@main
+    with:
+      tool: secretscan
+      args: scan src --format json
+      sarif-args: scan src --format sarif
