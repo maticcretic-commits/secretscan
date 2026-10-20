@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "secretscan"
+version = "1.0.0"
+description = "Scan agent outputs for leaked secrets + PII before they ship. Find secrets before git does."
+requires-python = ">=3.9"
+license = {text = "MIT"}
+
+[project.scripts]
+secretscan = "secretscan:main"
+
+[tool.setuptools]
+py-modules = ["secretscan"]
+package-dir = {"" = "src"}
