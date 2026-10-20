@@ -11,6 +11,22 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from secretscan import (Config, cmd_init, cmd_redact, cmd_scan, luhn_valid,
                         scan_line, scan_path, shannon_entropy)
 
+# Secret-shaped fixtures are assembled at runtime from fragments so no
+# literal secret ever sits in this file (CONVENTIONS.md fixture policy);
+# the runtime values are byte-identical to the formats under test.
+AWS_KEY = "AKIA" + "IOSFODNN7" + "EXAMPLE"
+AWS_SECRET_NAME = "aws_" + "secret_access_key"
+PK_PLAIN = "-----BEGIN " + "PRIVATE KEY-----"
+PK_RSA = "-----BEGIN RSA " + "PRIVATE KEY-----"
+PK_OPENSSH = "-----BEGIN OPENSSH " + "PRIVATE KEY-----"
+STRIPE_LIVE = "sk_" + "live_FakeStripeKey0000000000"
+STRIPE_RK_LIVE = "rk_" + "live_FakeStripeKey0000000000"
+STRIPE_WEBHOOK = "whsec_" + "FakeWebhookSecret0000"
+STRIPE_TEST = "sk_" + "test_FakeStripeKey0000000000"
+SLACK_BOT = "xoxb-" + "123456789012-abcdefghijkl"
+SLACK_APP = "xapp-" + "1-A0Fake-xyz-1234567890ab"
+GOOGLE_OAUTH = "ya29." + "FakeTokenValue123"
+
 
 def checks(line):
     """Detector ids fired by one line."""
@@ -26,7 +42,7 @@ def severities(line):
 # ---------------------------------------------------------------------------
 
 def test_aws_access_key():
-    fs = scan_line("key: AKIAIOSFODNN7EXAMPLE", "t", 1)
+    fs = scan_line("key: " + AWS_KEY, "t", 1)
     assert [f.check for f in fs] == ["aws-access-key"]
     assert fs[0].severity == "high"
 
@@ -38,7 +54,7 @@ def test_aws_asia_temporary_key():
 
 
 def test_aws_secret_assignment_is_critical_and_single():
-    fs = scan_line('aws_secret_access_key = "FAKEsecret0000000000000000"', "t", 1)
+    fs = scan_line(AWS_SECRET_NAME + ' = "FAKEsecret0000000000000000"', "t", 1)
     assert [f.check for f in fs] == ["aws-secret-key"]
     assert fs[0].severity == "critical"
 
@@ -58,30 +74,28 @@ def test_openai_variants():
 
 
 def test_slack_tokens():
-    assert "slack-token" in checks("xoxb-123456789012-abcdefghijkl")
-    assert "slack-token" in checks("xapp-1-A0Fake-xyz-1234567890ab")
+    assert "slack-token" in checks(SLACK_BOT)
+    assert "slack-token" in checks(SLACK_APP)
 
 
 def test_google_api_key_and_oauth():
     assert "google-api-key" in checks("AIza" + "aB1" * 11 + "cd")
-    assert "google-oauth-token" in checks("ya29.FakeTokenValue123")
+    assert "google-oauth-token" in checks(GOOGLE_OAUTH)
 
 
 def test_stripe_live_is_critical_test_is_high():
-    sev = severities("sk_live_FakeStripeKey0000000000")
+    sev = severities(STRIPE_LIVE)
     assert sev["stripe-key"] == "critical"
-    sev = severities("rk_live_FakeStripeKey0000000000")
+    sev = severities(STRIPE_RK_LIVE)
     assert sev["stripe-key"] == "critical"
-    sev = severities("whsec_FakeWebhookSecret0000")
+    sev = severities(STRIPE_WEBHOOK)
     assert sev["stripe-key"] == "critical"
-    sev = severities("sk_test_FakeStripeKey0000000000")
+    sev = severities(STRIPE_TEST)
     assert sev["stripe-key"] == "high"
 
 
 def test_private_key_block_is_critical():
-    for header in ("-----BEGIN PRIVATE KEY-----",
-                   "-----BEGIN RSA PRIVATE KEY-----",
-                   "-----BEGIN OPENSSH PRIVATE KEY-----"):
+    for header in (PK_PLAIN, PK_RSA, PK_OPENSSH):
         fs = scan_line(header, "t", 1)
         assert [f.check for f in fs] == ["private-key"]
         assert fs[0].severity == "critical"
@@ -173,7 +187,7 @@ def test_entropy_does_not_double_report_known_token():
 
 
 def test_line_numbers_are_per_line():
-    text = "clean line\nkey: AKIAIOSFODNN7EXAMPLE\nanother clean line"
+    text = "clean line\nkey: " + AWS_KEY + "\nanother clean line"
     findings, _ = scan_path_text(text)
     assert [(f.line, f.check) for f in findings] == [(2, "aws-access-key")]
 
@@ -193,8 +207,8 @@ def scan_path_text(text, name="trace.jsonl"):
 def test_inline_ignore_marker_suppresses_line(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     p = tmp_path / "a.txt"
-    p.write_text("key: AKIAIOSFODNN7EXAMPLE  # secretscan:ignore\n"
-                 "key2: AKIAIOSFODNN7EXAMPLE\n")
+    p.write_text("key: " + AWS_KEY + "  # secretscan:ignore\n"
+                 "key2: " + AWS_KEY + "\n")
     findings, _ = scan_path(str(p), Config())
     assert [f.line for f in findings] == [2]
 
@@ -202,8 +216,8 @@ def test_inline_ignore_marker_suppresses_line(tmp_path, monkeypatch):
 def test_config_ignore_paths_glob(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "fixtures").mkdir()
-    (tmp_path / "fixtures" / "sample.txt").write_text("AKIAIOSFODNN7EXAMPLE\n")
-    (tmp_path / "real.txt").write_text("AKIAIOSFODNN7EXAMPLE\n")
+    (tmp_path / "fixtures" / "sample.txt").write_text(AWS_KEY + "\n")
+    (tmp_path / "real.txt").write_text(AWS_KEY + "\n")
     (tmp_path / ".secretscan.json").write_text(
         json.dumps({"ignore_paths": ["fixtures/*"], "ignore_patterns": []}))
     from secretscan import load_config
@@ -215,7 +229,7 @@ def test_config_ignore_paths_glob(tmp_path, monkeypatch):
 def test_config_ignore_patterns_regex(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     p = tmp_path / "a.txt"
-    p.write_text("key: AKIAIOSFODNN7EXAMPLE\n")
+    p.write_text("key: " + AWS_KEY + "\n")
     (tmp_path / ".secretscan.json").write_text(
         json.dumps({"ignore_paths": [], "ignore_patterns": ["AKIA"]}))
     from secretscan import load_config
@@ -229,7 +243,7 @@ def test_config_ignore_patterns_regex(tmp_path, monkeypatch):
 
 def test_redact_replaces_and_preserves_original(tmp_path):
     src = tmp_path / "trace.txt"
-    original = ("key: AKIAIOSFODNN7EXAMPLE\n"
+    original = ("key: " + AWS_KEY + "\n"
                 "card: 4242 4242 4242 4242\n"
                 "nothing to hide\n")
     src.write_text(original)
@@ -241,7 +255,7 @@ def test_redact_replaces_and_preserves_original(tmp_path):
     # Original untouched.
     assert src.read_text() == original
     redacted = (out / "trace.txt").read_text()
-    assert "AKIAIOSFODNN7EXAMPLE" not in redacted
+    assert AWS_KEY not in redacted
     assert "4242 4242 4242 4242" not in redacted
     assert "[REDACTED:aws-access-key]" in redacted
     assert "[REDACTED:credit-card]" in redacted
@@ -276,14 +290,15 @@ def run_scan(path, capsys, **kw):
 def test_json_output_shape(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     p = tmp_path / "a.txt"
-    p.write_text("key: AKIAIOSFODNN7EXAMPLE\n")
+    p.write_text("key: " + AWS_KEY + "\n")
     code, out = run_scan(str(p), capsys, format="json")
     assert code == 1
     data = json.loads(out)
-    assert len(data) == 1
-    assert set(data[0].keys()) == {"file", "line", "check", "type", "severity"}
-    assert data[0]["check"] == "aws-access-key"
-    assert data[0]["line"] == 1
+    findings = data["findings"]
+    assert len(findings) == 1
+    assert set(findings[0].keys()) == {"file", "line", "check", "type", "severity"}
+    assert findings[0]["check"] == "aws-access-key"
+    assert findings[0]["line"] == 1
 
 
 def test_exit_code_zero_for_clean_file(tmp_path, capsys, monkeypatch):
@@ -315,19 +330,20 @@ def test_directory_recursion_and_git_skip(tmp_path, capsys, monkeypatch):
     monkeypatch.chdir(tmp_path)
     (tmp_path / "a" / "b").mkdir(parents=True)
     (tmp_path / ".git").mkdir()
-    (tmp_path / "a" / "b" / "deep.txt").write_text("AKIAIOSFODNN7EXAMPLE\n")
-    (tmp_path / ".git" / "config.txt").write_text("AKIAIOSFODNN7EXAMPLE\n")
+    (tmp_path / "a" / "b" / "deep.txt").write_text(AWS_KEY + "\n")
+    (tmp_path / ".git" / "config.txt").write_text(AWS_KEY + "\n")
     code, out = run_scan(str(tmp_path), capsys, format="json")
     assert code == 1
     data = json.loads(out)
-    assert len(data) == 1
-    assert data[0]["file"].endswith("deep.txt")
+    findings = data["findings"]
+    assert len(findings) == 1
+    assert findings[0]["file"].endswith("deep.txt")
 
 
 def test_binary_file_skipped(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     p = tmp_path / "blob.bin"
-    p.write_bytes(b"\x00\x01AKIAIOSFODNN7EXAMPLE\x00")
+    p.write_bytes(b"\x00\x01" + AWS_KEY.encode() + b"\x00")
     findings, scanned = scan_path(str(p), Config())
     assert findings == [] and scanned == 0
 
@@ -350,7 +366,7 @@ def test_staged_scan_reports_json(tmp_path, monkeypatch, capsys):
             ["git", "-c", "user.email=t@t", "-c", "user.name=t", *a],
             capture_output=True, text=True, check=True)
     git("init", "-q")
-    (tmp_path / "leak.txt").write_text("fine line\nAKIAIOSFODNN7EXAMPLE\n")
+    (tmp_path / "leak.txt").write_text("fine line\n" + AWS_KEY + "\n")
     git("add", "leak.txt")
     args = argparse.Namespace(path=None, staged=True, format="json",
                               fail_on="high")
@@ -358,10 +374,11 @@ def test_staged_scan_reports_json(tmp_path, monkeypatch, capsys):
         cmd_scan(args)
     assert ei.value.code == 1
     data = json.loads(capsys.readouterr().out)
-    assert len(data) == 1
-    assert data[0]["file"] == "leak.txt"
-    assert data[0]["line"] == 2
-    assert data[0]["check"] == "aws-access-key"
+    findings = data["findings"]
+    assert len(findings) == 1
+    assert findings[0]["file"] == "leak.txt"
+    assert findings[0]["line"] == 2
+    assert findings[0]["check"] == "aws-access-key"
 
 
 def test_init_scaffolds_config_and_sample(tmp_path):
@@ -370,6 +387,79 @@ def test_init_scaffolds_config_and_sample(tmp_path):
     cfg = json.loads((tmp_path / ".secretscan.json").read_text())
     assert "ignore_paths" in cfg and "ignore_patterns" in cfg
     sample = (tmp_path / "sample-agent-output.txt").read_text()
-    assert "AKIAIOSFODNN7EXAMPLE" in sample
+    assert AWS_KEY in sample
     # Second run without --force refuses to overwrite.
     cmd_init(args)
+
+
+# ---------------------------------------------------------------------------
+# Phase 1: JSON envelope, --version, error envelope, self-scan
+# ---------------------------------------------------------------------------
+
+CLI_PATH = Path(__file__).parent.parent / "src" / "secretscan.py"
+
+
+def run_cli(*argv):
+    return subprocess.run([sys.executable, str(CLI_PATH), *argv],
+                          capture_output=True, text=True)
+
+
+def test_json_envelope_and_summary(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    p = tmp_path / "planted.txt"
+    p.write_text(AWS_SECRET_NAME + ' = "FAKEsecret0000000000000000"\n'
+                 "key: " + AWS_KEY + "\n")
+    code, out = run_scan(str(p), capsys, format="json")
+    assert code == 1
+    data = json.loads(out)
+    assert isinstance(data, dict)
+    assert data["tool"] == "secretscan"
+    assert data["version"] == "1.0.0"
+    assert data["schema_version"] == 1
+    # One critical (AWS secret assignment) + one high (AWS access key).
+    assert data["findings_summary"] == {"count": 2,
+                                        "highest_severity": "CRITICAL"}
+    assert len(data["findings"]) == 2
+    assert {f["check"] for f in data["findings"]} == {"aws-secret-key",
+                                                      "aws-access-key"}
+    # High-only file: highest_severity is HIGH.
+    p2 = tmp_path / "highonly.txt"
+    p2.write_text("key: " + AWS_KEY + "\n")
+    code, out = run_scan(str(p2), capsys, format="json")
+    assert code == 1
+    data = json.loads(out)
+    assert data["findings_summary"] == {"count": 1,
+                                        "highest_severity": "HIGH"}
+    # Clean file: count 0, highest_severity NONE.
+    clean = tmp_path / "clean.txt"
+    clean.write_text("just some agent notes, nothing sensitive\n")
+    code, out = run_scan(str(clean), capsys, format="json")
+    assert code == 0
+    data = json.loads(out)
+    assert data["findings_summary"] == {"count": 0,
+                                        "highest_severity": "NONE"}
+    assert data["findings"] == []
+
+
+def test_version_flag():
+    proc = run_cli("--version")
+    assert proc.returncode == 0
+    assert proc.stdout.strip() == "secretscan 1.0.0"
+
+
+def test_missing_path_error_envelope():
+    proc = run_cli("scan", "/definitely/not/here.txt")
+    assert proc.returncode == 2
+    lines = [ln for ln in proc.stderr.splitlines() if ln.strip()]
+    assert lines[0] == "error: path not found: /definitely/not/here.txt"
+    envelope = json.loads(lines[-1])
+    assert envelope == {"error": {
+        "code": "file_not_found",
+        "message": "path not found: /definitely/not/here.txt"}}
+
+
+def test_own_src_scans_clean():
+    src = Path(__file__).parent.parent / "src"
+    findings, scanned = scan_path(str(src), Config())
+    assert scanned >= 1
+    assert findings == []
