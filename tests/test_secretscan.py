@@ -296,7 +296,8 @@ def test_json_output_shape(tmp_path, capsys, monkeypatch):
     data = json.loads(out)
     findings = data["findings"]
     assert len(findings) == 1
-    assert set(findings[0].keys()) == {"file", "line", "check", "type", "severity"}
+    assert set(findings[0].keys()) == {"file", "line", "check", "type",
+                                       "severity", "tier"}
     assert findings[0]["check"] == "aws-access-key"
     assert findings[0]["line"] == 1
 
@@ -463,3 +464,71 @@ def test_own_src_scans_clean():
     findings, scanned = scan_path(str(src), Config())
     assert scanned >= 1
     assert findings == []
+
+
+# ---------------------------------------------------------------------------
+# Family severity tiers (CONVENTIONS.md): findings carry `tier` alongside
+# the native `severity` label.
+# ---------------------------------------------------------------------------
+
+def test_severity_tier_mapping():
+    from secretscan import severity_tier
+    assert severity_tier("critical") == "CRITICAL"
+    assert severity_tier("high") == "HIGH"
+    assert severity_tier("medium") == "INFO"
+    assert severity_tier("low") == "INFO"
+
+
+def test_json_findings_carry_tier(tmp_path, capsys, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    p = tmp_path / "planted.txt"
+    p.write_text(AWS_SECRET_NAME + ' = "FAKEsecret0000000000000000"\n'
+                 "key: " + AWS_KEY + "\n")
+    code, out = run_scan(str(p), capsys, format="json")
+    assert code == 1
+    data = json.loads(out)
+    tiers = {f["check"]: f["tier"] for f in data["findings"]}
+    assert tiers == {"aws-secret-key": "CRITICAL",
+                     "aws-access-key": "HIGH"}
+    # Native labels are kept alongside the tier (mapping is additive).
+    sev = {f["check"]: f["severity"] for f in data["findings"]}
+    assert sev == {"aws-secret-key": "critical",
+                   "aws-access-key": "high"}
+
+
+def test_generated_artifacts_skipped(tmp_path):
+    # An egg-info entry_points declaration is packaging metadata, not
+    # a credential — generated dirs are skipped like .git internals.
+    egg = tmp_path / "src" / "demo.egg-info"
+    egg.mkdir(parents=True)
+    (egg / "entry_points.txt").write_text(
+        "[console_scripts]\ndemo = demo:main\n")
+    findings, scanned = scan_path(str(tmp_path / "src"), Config())
+    assert findings == []
+    # The same assignment shape in a real file still fires.
+    p = tmp_path / "src" / "notes.txt"
+    p.write_text("password = \"FAKEsecret0000000000000000\"\n")
+    findings, _ = scan_path(str(p), Config())
+    assert any(f.check == "generic-credential" for f in findings)
+
+
+def test_aws_secret_bare_name_in_prose_is_not_a_finding():
+    # Documentation mentions the variable name in prose (this tool's
+    # own detector table does). The NAME alone is not a secret —
+    # assignment context is required.
+    assert "aws-secret-key" not in checks(
+        "| `aws-secret-key` | `aws_secret_access_key` assignments |")
+    assert "aws-secret-key" not in checks(
+        "Set the aws_secret_access_key variable before deploying.")
+    # Assignment form (config, env, YAML) still fires, critical.
+    fs = scan_line(AWS_SECRET_NAME + ': "FAKEsecret0000000000000000"',
+                   "t", 1)
+    assert [f.check for f in fs] == ["aws-secret-key"]
+
+
+def test_generic_credential_ignores_backticked_prose():
+    # "Secrets: `api_key` ..." is prose quoting a name in markdown,
+    # not a credential assignment.
+    fs = scan_line("References are not secrets: `api_key` is a name.",
+                   "t", 1)
+    assert not any(f.check == "generic-credential" for f in fs)
